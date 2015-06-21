@@ -6,6 +6,8 @@ from collections import OrderedDict, defaultdict
 from countrycode import countrycode
 import uuid64
 import random
+import locale
+PROV = Namespace('http://www.w3.org/ns/prov#')
 
 class TagLifter:
     """A class for convering HXL-style tagged data into RDF linked data
@@ -176,7 +178,35 @@ class TagLifter:
         self.graph.add((entity,RDF.type,self.ontology[entity_type.title()]))
         return entity 
 
+    def create_metadata(self,meta_data = None):
+        """
+        Create a meta-data block. 
+        
+        Mostly uses provenance ontology, with other properties found covered in the local ontology.
+        
+        """
+        if not meta_data:
+            meta_data = self.source_meta
+        
+        entity = URIRef(self.base + "prov/source/" + uuid64.hex()) #ToDo - consider whether we should build this off of filename and time?
+        self.graph.add((entity,RDF.type,PROV.Entity)) ## ToDo - ****** CORRECT THE ENTITY TYPE HERE *****
+        
+        for key in meta_data.keys():
+            if key == "title":
+                pass
+            elif key == "source":
+                pass
+            elif key == "primarySource":
+                pass
+            elif key == "sourceType":
+                pass
+            else:
+                self.graph.add((entity,self.ontology[key],Literal(meta_data[key])))
+        return entity
+            
 
+        
+    
     def build_graph(self):
         """
         Taking the mapped data in self.map and the ontology, build out a graph.
@@ -193,18 +223,32 @@ class TagLifter:
             data = self.map[0:self.limit_rows]
         else:
             data = self.map
-            
+        
+        # We need to build the meta-data object.
+        source = self.create_metadata()
+        
         for line, row in data.iterrows():
+            if self.debug:
+                print "Processing row " + str(line)
+                
             entity_cache = {}
             self.relationship_cache = {} # Reset the relationships cache for each row
             country = self.get_country(row)
             lang = self.get_language(row)
-            entity = URIRef(self.base+"row/"+str(line))
+            
+            # Add provenance information
+            source_row =  URIRef(str(source)+"/"+str(line))
+            self.graph.add((source_row,RDF.type,self.ontology['SourceRecord']))
+            self.graph.add((source_row,PROV.wasDerivedFrom,source)) 
+            
+            #Set up variables for the first properties we encounter
+            entity = source_row
             entity_class = self.ontology["Row"]
             last_entity = entity
             last_class = entity_class
             
             for key in row.keys():
+
                 col_lang = lang
                 current_path = ""
 
@@ -238,6 +282,7 @@ class TagLifter:
                                 entity_class =  entity_cache[current_path]['class']
                             else:
                                 entity = self.create_entity(tag,current_path,row,country,col_lang)
+                                self.graph.add((entity,PROV.wasDerivedFrom,source_row))
                                 entity_class = self.ontology[tag.title()]
                                 entity_cache[current_path] = {"entity":entity,"class":entity_class}
                             
@@ -254,7 +299,7 @@ class TagLifter:
                                 self.graph.add((entity,label_rel,Literal(row[current_path],lang=col_lang)))                                
                             
                             if not last_entity == entity:
-                                relationship = self.seek_class_relationship(last_entity,entity,row,country,lang)
+                                relationship = self.seek_class_relationship(last_entity,entity,row,country,lang,source_row)
                                 if relationship:
                                     entity_cache[current_path] = relationship
                             last_entity = entity
@@ -280,18 +325,20 @@ class TagLifter:
                                     step = None
                                     step_class = None
                                 
+                                # We need to check any restrictions on the data property
+                                # 1. Can it be attached to the class;
+                                # 2. If not, can it be attached to the intermediary (found in the entity cache for the last path?)
+                                # 3. What typing do we need to provide? 
+                                
                                 if self.add_data_property(entity,entity_class,self.ontology[tag],row[key]):
-                                    print "Added property right away"
+                                    pass
                                 elif step and self.add_data_property(step,step_class,self.ontology[tag],row[key]):
-                                    print "Added propery to step"
+                                    pass
                                 else:
                                     if self.allow_extra_properties:
                                         self.graph.add((last_entity,self.ontology["misc/"+tag],Literal(row[key]))) 
                                 
-                                # We need to check any restrictions on the data property
-                                # 1. Can it be attached to the class;
-                                # 2. If not, can it be attached to the intermediary (found in the entity cache for the last path?)
-                                # 3. What typing do we need to provide
+
                                 
 
 
@@ -309,7 +356,7 @@ class TagLifter:
         
         ToDo: Add caching to lookups
         
-        We rely on Pandas to cast values right now...
+        We rely on Pandas to cast some values right now...
         
         """
         
@@ -318,7 +365,19 @@ class TagLifter:
             if predicate_range == XSD.dateTime:
                 value = pandas.to_datetime(value)
             elif predicate_range ==XSD.boolean:
-                value = 
+                value = True if value else False ## ToDo - improve the handling of Booleans
+            elif predicate_range ==XSD.float:
+              #  value = str(value).translate(None,['1','2','3','4','5','7','8','9','0','.'])  # ToDo - set-up better replacemnt for errange % signs etc.
+                try:
+                    value = locale.atof(value)
+                except ValueError:
+                    value = value
+            elif predicate_range ==XSD.integer:
+              #  value = str(value).translate(None,['1','2','3','4','5','7','8','9','0','.'])
+                try:
+                    value = locale.atoi(value)
+                except ValueError:
+                    value = value
             self.graph.add((subj,predicate,Literal(value)))
             return True
         else:
@@ -326,7 +385,7 @@ class TagLifter:
         
 
 
-    def seek_class_relationship(self,source,target,row,country,lang):
+    def seek_class_relationship(self,source,target,row,country,lang,source_row):
         """
         Given two classes, this routine aims to find either a direct relationship that can be made between them,
         or an indirect (one step removed) relationship that can be made.
@@ -413,6 +472,8 @@ class TagLifter:
             identifier =  entity_type.lower() + "/" + uuid64.hex()
             entity = URIRef(self.base+identifier )
             self.graph.add((entity,RDF.type,rel['t1']))
+            self.graph.add((entity,PROV.wasDerivedFrom,source_row))
+            
             self.graph.add((source,rel['p1'],entity))
             self.add_inverse(source,rel['p1'],entity) # We add the inverse relationships also
             self.graph.add((entity,rel['p2'],target))
@@ -436,7 +497,9 @@ class TagLifter:
         
         
 
-    def __init__(self, ontology = None, source = None, base = "http://localhost/data/"):
+    def __init__(self, ontology = None, source = None, base = "http://localhost/data/",source_meta = None,debug=True):
+        self.source_meta = source_meta
+        self.debug = debug
         self.country_cache = {}
         self.id_cache = {}
         self.type_cache = {}
@@ -447,6 +510,7 @@ class TagLifter:
         self.base = base
         self.graph = Graph()
         self.graph.bind("skos", SKOS)
+        self.graph.bind("prov", PROV)
         if ontology:
             self.load_ontology(ontology)
         if source:
