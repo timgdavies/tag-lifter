@@ -24,6 +24,11 @@ class TagLifter:
     Currently only csv files are handled
     """
     
+    def class_title(self,string):
+        return string[0].upper()+string[1:]
+        
+    
+    
     def clean_string(self,string):
         invalid_chars = ''.join(c for c in map(chr, range(256)) if not c.isalnum())
         return str(string).translate(None,invalid_chars)
@@ -52,7 +57,7 @@ class TagLifter:
         self.ontology = Namespace(self.ontology_string)
             
     
-    def map_tags(self):   
+    def map_tags(self):
         """Searches the first 25 rows of the dataset for #tags indicating the contents of a column.
         
         Uses these as column headers where they are available."""
@@ -113,6 +118,7 @@ class TagLifter:
         if tag in self.type_cache.keys():
             tag_type = self.type_cache[tag]
         else:
+            print "checking for " + tag
             if ( URIRef(self.ontology[tag.title()]), RDF.type, OWL.Class ) in self.onto:
                 tag_type = "Class"
             elif ( URIRef(self.ontology[tag]), RDF.type, OWL.ObjectProperty ) in self.onto:
