@@ -118,7 +118,6 @@ class TagLifter:
         if tag in self.type_cache.keys():
             tag_type = self.type_cache[tag]
         else:
-            print "checking for " + tag
             if ( URIRef(self.ontology[self.class_title(tag)]), RDF.type, OWL.Class ) in self.onto:
                 tag_type = "Class"
             elif ( URIRef(self.ontology[tag]), RDF.type, OWL.ObjectProperty ) in self.onto:
@@ -243,7 +242,7 @@ class TagLifter:
             lang = self.get_language(row)
             
             # Add provenance information
-            source_row =  URIRef(str(source)+"/"+str(line))
+            source_row =  URIRef(str(source)+"/row/"+str(line))
             self.graph.add((source_row,RDF.type,self.ontology['SourceRecord']))
             self.graph.add((source_row,PROV.wasDerivedFrom,source)) 
             
@@ -304,12 +303,52 @@ class TagLifter:
                             elif current_path in row.keys():
                                 self.graph.add((entity,label_rel,Literal(row[current_path],lang=col_lang)))                                
                             
+                            # First check if we can make a relationship between this entity, and it's parent, or nearest neighbour
                             if not last_entity == entity:
                                 relationship = self.seek_class_relationship(last_entity,entity,row,country,lang,source_row)
                                 if relationship:
                                     entity_cache[current_path] = relationship
                             last_entity = entity
                             last_class = self.ontology[self.class_title(tag)]
+                            
+                            # Now check for other possible relationships: https://github.com/timgdavies/tag-lifter/issues/1
+
+                            possible_relationships = self.check_available_relationships(tag)
+
+                            ###Implementing https://github.com/timgdavies/tag-lifter/issues/1 (but very inefficiently!)
+                            # (2) Does a column exist at the next level of depth?
+                            for rel in possible_relationships:
+                                search = current_path + "+" + rel[0].lower() + rel[1:]
+                                for skey in row.keys():
+                                    if search in skey:
+                                        try:
+                                            possible_relationships.remove(rel) #If we're going to get to this relationship later, unset it. 
+                                        except ValueError:
+                                            pass # We might have already removed the element
+                                           
+                            # (3) Does a column exist at the parent level for these classes?
+                            # First, work out the parent node
+                            if n == 0:
+                                parent = "#"
+                            else:
+                                parent = "+".join(tag_path[0:n]) + "+"
+                            
+                            # Now iterate through remaining relationships NEEDS TESTING
+                            for rel in possible_relationships:
+                                search = parent + rel[0].lower() + rel[1:]
+                                #if not search in entity_cache.keys():
+                                for skey in row.keys():
+                                    if search in skey:
+                                        try:
+                                            possible_relationships.remove(rel)
+                                            if search in entity_cache:
+                                                relationship = self.seek_class_relationship(entity,entity_cache[search]['entity'],row,country,lang,source_row)
+                                            else: 
+                                                print search + " has not been created yet, so we can relate to it"
+                                        except ValueError:
+                                            pass   
+                            
+                            # (1) Is the entry already created
                             
                         elif tag_type == "ObjectProperty":
                             # We don't handle objectProperties right now.
@@ -319,7 +358,7 @@ class TagLifter:
                             # We attach any data properties to the previous class in the tag_path, or in the last column if no classes found since then
                             # ToDo: This needs to take more account of data types from the ontology
                             # This needs to also check if we should be attaching to the class, or to a mediating class
-                            
+
                             if len(tag_path) > (1 + n + inc):
                                 print "Data properties can only be qualified by language tags. " + key + " is an invalid tag."
                             else:
@@ -343,9 +382,63 @@ class TagLifter:
                                 else:
                                     if self.allow_extra_properties:
                                         self.graph.add((last_entity,self.ontology["misc/"+tag],Literal(row[key]))) 
-                                
-
-                                
+                           
+    def check_available_relationships(self,source):
+          """
+          Check what object relationships the current class can stand in, and return a list.
+          """
+          if source in self.relationship_cache.keys():
+              return self.relationship_cache[source]
+          else:
+              source_class = self.ontology[self.class_title(source)]
+              query = """PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+              PREFIX owl: <http://www.w3.org/2002/07/owl#>
+              PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+              PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+              SELECT DISTINCT ?t1 ?t2
+              WHERE { 
+                ?o  a owl:Class. 
+                FILTER(?o = <%s>)
+                {  
+                  ?o rdfs:subClassOf+ ?restriction.
+                  ?restriction a owl:Restriction. 
+                  ?restriction owl:onProperty ?p1.
+                  {
+                    {
+                      ?restriction owl:someValuesFrom ?t1.
+                    } UNION {  
+                      ?restriction owl:someValuesFrom ?restrictionClass.
+                      ?t1 rdfs:subClassOf+ ?restrictionClass.
+                    }
+                  }
+                }
+                OPTIONAL {
+                  ?t1 rdfs:subClassOf+ ?restriction2.
+                  ?restriction2 a owl:Restriction.
+                  ?restriction2 owl:onProperty ?p2.
+                  {
+                    {
+                       ?restriction2 owl:someValuesFrom ?t2.
+                    } UNION {
+                       ?restriction2 owl:someValuesFrom ?restriction2class.
+                       ?t2 rdfs:subClassOf+ ?restriction2class.
+                    }
+                  }
+                }
+              }"""%(source_class)
+              rels = []
+              q = self.onto.query(query)
+              for res in q:
+                  t1 = str(res['t1']).split("/")[-1]
+                  if not t1 in rels:
+                      rels.append(t1)
+                  if res['t2']:
+                      t2 = str(res['t2'].split("/")[-1])
+                      if not t2 in rels:
+                          rels.append(t2)
+              
+              self.relationship_cache[source] = rels
+              return rels
 
 
     def add_data_property(self,subj,subj_class,predicate,value):
@@ -389,7 +482,8 @@ class TagLifter:
         else:
             return False
         
-
+  
+        
 
     def seek_class_relationship(self,source,target,row,country,lang,source_row):
         """
