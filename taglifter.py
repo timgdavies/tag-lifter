@@ -70,7 +70,7 @@ class TagLifter:
                     mapping[key] = row[key]
                     tag_count +=1
                 else:
-                    new_key = self.clean_string(key.title())
+                    new_key = self.clean_string(self.class_title(key))
                     mapping[key] = new_key[0].lower()+new_key[1:]
             if tag_count > 3: # We assume we've found the tag row once we've got a row with more than 3 tags in
                 #Remove the tag row
@@ -119,7 +119,7 @@ class TagLifter:
             tag_type = self.type_cache[tag]
         else:
             print "checking for " + tag
-            if ( URIRef(self.ontology[tag.title()]), RDF.type, OWL.Class ) in self.onto:
+            if ( URIRef(self.ontology[self.class_title(tag)]), RDF.type, OWL.Class ) in self.onto:
                 tag_type = "Class"
             elif ( URIRef(self.ontology[tag]), RDF.type, OWL.ObjectProperty ) in self.onto:
                 tag_type = "ObjectProperty"
@@ -181,7 +181,7 @@ class TagLifter:
     def create_entity(self,entity_type,path,row,country,lang):
         identifier = self.generate_identifier(row,path,entity_type,country,lang)
         entity = URIRef(self.base+entity_type.lower()+"/"+identifier )
-        self.graph.add((entity,RDF.type,self.ontology[entity_type.title()]))
+        self.graph.add((entity,RDF.type,self.ontology[self.class_title(entity_type)]))
         return entity 
 
     def create_metadata(self,meta_data = None):
@@ -289,7 +289,7 @@ class TagLifter:
                             else:
                                 entity = self.create_entity(tag,current_path,row,country,col_lang)
                                 self.graph.add((entity,PROV.wasDerivedFrom,source_row))
-                                entity_class = self.ontology[tag.title()]
+                                entity_class = self.ontology[self.class_title(tag)]
                                 entity_cache[current_path] = {"entity":entity,"class":entity_class}
                             
                             
@@ -309,7 +309,7 @@ class TagLifter:
                                 if relationship:
                                     entity_cache[current_path] = relationship
                             last_entity = entity
-                            last_class = self.ontology[tag.title()]
+                            last_class = self.ontology[self.class_title(tag)]
                             
                         elif tag_type == "ObjectProperty":
                             # We don't handle objectProperties right now.
